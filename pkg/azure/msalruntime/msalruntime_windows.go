@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/cdobbyn/azure-go-cli/pkg/logger"
 	"github.com/google/uuid"
 	"golang.org/x/sys/windows"
 )
@@ -226,20 +227,33 @@ var (
 	procGetConsoleWindow = kernel32.NewProc("GetConsoleWindow")
 )
 
-// resolveParentWindow mirrors the broker's own fallback chain: the caller's
-// window, else the console window's root owner, else the desktop.
-func resolveParentWindow(hwnd uintptr) uintptr {
+// resolveParentWindow returns a window for the broker to parent its dialog to,
+// plus a cleanup to run once the sign-in is over.
+//
+// The console window is used only when this process owns it. Under a ConPTY
+// host it belongs to the terminal, and a dialog parented there never delivers
+// its completion to us - see window_windows.go. In that case we pump our own
+// hidden window instead.
+func resolveParentWindow(hwnd uintptr) (uintptr, func()) {
+	noop := func() {}
 	if hwnd != 0 {
-		return hwnd
+		return hwnd, noop
 	}
-	if console := callRet(procGetConsoleWindow); console != 0 {
+	if console := callRet(procGetConsoleWindow); windowIsOurs(console) {
 		const gaRootOwner = 3
-		if owner := callRet(procGetAncestor, console, gaRootOwner); owner != 0 {
-			return owner
+		if owner := callRet(procGetAncestor, console, gaRootOwner); windowIsOurs(owner) {
+			return owner, noop
 		}
-		return console
+		return console, noop
 	}
-	return callRet(procGetDesktopWindow)
+	if w, err := newPumpWindow(); err == nil {
+		return w.hwnd, w.Close
+	} else {
+		// Falling back to the desktop window keeps the old behaviour rather
+		// than failing a sign-in outright. It may still stall, so say why.
+		logger.Debug("No console window of ours and no pump window (%v), parenting to the desktop", err)
+	}
+	return callRet(procGetDesktopWindow), noop
 }
 
 // --- public API -----------------------------------------------------------
@@ -268,10 +282,11 @@ func SignInInteractively(ctx context.Context, authority, clientID string, scopes
 	if err != nil {
 		return nil, err
 	}
-	hwnd := resolveParentWindow(parentHWND)
+	hwnd, closeWindow := resolveParentWindow(parentHWND)
 	if hwnd == 0 {
 		return nil, errors.New("msalruntime: no parent window handle available for interactive sign-in")
 	}
+	defer closeWindow()
 
 	h, err := await(ctx, releaseAuthResult, func(callbackData uintptr, async *asyncHandle) errorHandle {
 		r := callRet(procSignInInteractivelyAsync, hwnd, uintptr(ap.h),

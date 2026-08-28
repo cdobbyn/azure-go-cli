@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"os"
 
+	"github.com/cdobbyn/azure-go-cli/pkg/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -12,6 +14,11 @@ func NewLoginCommand() *cobra.Command {
 		Short: "Log in to Azure",
 		Long:  "Log in to Azure using device code flow",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Login prints no machine-readable output, so its progress lines go
+			// to stdout. On stderr, PowerShell wraps every one of them in a
+			// NativeCommandError and a successful login looks like a failure.
+			logger.SetOutput(os.Stdout)
+
 			tenantSelection, _ := cmd.Flags().GetBool("tenant-selection")
 			subscription, _ := cmd.Flags().GetString("subscription")
 			tenant, _ := cmd.Flags().GetString("tenant")

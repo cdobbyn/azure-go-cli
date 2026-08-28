@@ -14,6 +14,9 @@ var (
 	logger *slog.Logger
 	// Output is the writer for log messages (defaults to stderr)
 	Output io.Writer = os.Stderr
+	// level is the level the handler was last built with, so that changing the
+	// output writer doesn't silently reset it.
+	level = slog.LevelInfo
 )
 
 func init() {
@@ -22,7 +25,24 @@ func init() {
 }
 
 // SetLogLevel sets the logging level
-func SetLogLevel(level slog.Level) {
+func SetLogLevel(l slog.Level) {
+	level = l
+	rebuild()
+}
+
+// SetOutput routes log records to w.
+//
+// Stderr is the right default: most commands print JSON to stdout, and mixing
+// progress lines into it would break any parser downstream. Purely interactive
+// commands that emit no machine-readable output call this with os.Stdout,
+// because PowerShell renders anything a native command writes to stderr as a
+// NativeCommandError - so ordinary progress reads as a failure.
+func SetOutput(w io.Writer) {
+	Output = w
+	rebuild()
+}
+
+func rebuild() {
 	handler := slog.NewTextHandler(Output, &slog.HandlerOptions{
 		Level: level,
 	})
